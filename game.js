@@ -5,6 +5,7 @@ const CANVAS_HEIGHT = 450;
 const GRAVITY = 0.3;
 const PLAYER_SPEED = 3.5;
 const JUMP_FORCE = -10;
+const MAX_LEVEL = 5;
 
 let cameraX = 0;
 let currentLevel = 1;
@@ -18,6 +19,14 @@ const COLORS = {
     spike: '#D32F2F',
     castle: '#9C27B0',
     flag: '#FFEB3B'
+};
+
+const THEMES = {
+    1: { skyTop: '#87CEEB', skyBottom: '#E0F6FF', hillColor: '#A5D6A7' },
+    2: { skyTop: '#87CEEB', skyBottom: '#E0F6FF', hillColor: '#A5D6A7' },
+    3: { skyTop: '#87CEEB', skyBottom: '#E0F6FF', hillColor: '#A5D6A7' },
+    4: { skyTop: '#FF6B35', skyBottom: '#FFD166', hillColor: '#D4A017' },  // sunset
+    5: { skyTop: '#0D1B2A', skyBottom: '#1B3A4B', hillColor: '#1E3A2F' },  // night
 };
 
 const gameState = {
@@ -69,6 +78,8 @@ function playSound(type) {
 
         if (type === 'coin') { note(880, now, 0.06); note(1320, now + 0.06, 0.1); }
         else if (type === 'jump') { slide(280, 560, 0.12); }
+        else if (type === 'jump2') { slide(320, 640, 0.10, 0.15); } // softer double-jump
+        else if (type === 'stomp') { note(180, now, 0.04, 0.35); note(90, now + 0.04, 0.12, 0.3); }
         else if (type === 'death') { slide(400, 80, 0.45, 0.3); }
         else if (type === 'levelcomplete') { [523, 659, 784].forEach((f, i) => note(f, now + i * 0.13, 0.18)); }
         else if (type === 'win') { [523, 659, 784, 1047].forEach((f, i) => note(f, now + i * 0.15, 0.22)); }
@@ -79,7 +90,7 @@ function playSound(type) {
 const particles = [];
 
 class Particle {
-    constructor(x, y) {
+    constructor(x, y, color) {
         this.x = x;
         this.y = y;
         this.velX = (Math.random() - 0.5) * 5;
@@ -87,7 +98,7 @@ class Particle {
         this.life = 1.0;
         this.decay = Math.random() * 0.03 + 0.03;
         this.size = Math.random() * 4 + 2;
-        this.color = `hsl(${Math.random() * 50 + 30}, 100%, 60%)`;
+        this.color = color || `hsl(${Math.random() * 50 + 30}, 100%, 60%)`;
     }
     update() {
         this.x += this.velX;
@@ -120,43 +131,53 @@ class Player {
         this.grounded = false;
         this.facingRight = true;
         this.jumpPressed = false;
+        this.jumpsLeft = 2; // double jump
     }
 
-    update(platforms, coins, spikes) {
+    update(platforms, coins, spikes, enemies, movingPlatforms) {
         if (keys.left) { this.velX = -this.speed; this.facingRight = false; }
         else if (keys.right) { this.velX = this.speed; this.facingRight = true; }
         else { this.velX *= 0.8; }
 
-        if (keys.up && this.grounded && !this.jumpPressed) {
+        if (keys.up && this.jumpsLeft > 0 && !this.jumpPressed) {
+            const isDoubleJump = !this.grounded;
             this.velY = this.jumpForce;
+            this.jumpsLeft--;
             this.grounded = false;
             this.jumpPressed = true;
-            playSound('jump');
+            playSound(isDoubleJump ? 'jump2' : 'jump');
         }
         if (!keys.up) this.jumpPressed = false;
 
         this.velY += GRAVITY;
 
-        // Separate X and Y phases to avoid corner misclassification
+        // X phase
         this.x += this.velX;
         if (this.x < 0) this.x = 0;
-        for (const p of platforms) {
+        const allPlatforms = movingPlatforms ? [...platforms, ...movingPlatforms] : platforms;
+        for (const p of allPlatforms) {
             if (!this.overlaps(p)) continue;
             if (this.velX > 0) this.x = p.x - this.width;
             else if (this.velX < 0) this.x = p.x + p.width;
             this.velX = 0;
         }
 
+        // Y phase
         this.y += this.velY;
         if (this.y > CANVAS_HEIGHT + 100) return 'dead';
 
         this.grounded = false;
-        for (const p of platforms) {
+        for (const p of allPlatforms) {
             if (!this.overlaps(p)) continue;
             if (this.velY >= 0) {
                 this.y = p.y - this.height;
                 this.velY = 0;
                 this.grounded = true;
+                this.jumpsLeft = 2;
+                // Ride moving platforms
+                if (p.prevX !== undefined) {
+                    this.x += p.x - p.prevX;
+                }
             } else {
                 this.y = p.y + p.height;
                 this.velY *= -0.3;
@@ -179,6 +200,26 @@ class Player {
             if (this.checkSpike(spike)) return 'dead';
         }
 
+        // Enemy collision
+        if (enemies) {
+            for (const enemy of enemies) {
+                if (enemy.dead) continue;
+                if (!this.overlaps(enemy)) continue;
+                // Stomp: player falling, bottom of player was above enemy top last frame
+                if (this.velY >= 0 && (this.y + this.height - this.velY) <= enemy.y + 8) {
+                    enemy.squish();
+                    this.velY = -7;
+                    this.jumpsLeft = 2;
+                    playSound('stomp');
+                    for (let p = 0; p < 10; p++) {
+                        particles.push(new Particle(enemy.x + 15, enemy.y + 13, `hsl(${Math.random()*40+100}, 70%, 45%)`));
+                    }
+                } else {
+                    return 'dead';
+                }
+            }
+        }
+
         return null;
     }
 
@@ -189,7 +230,6 @@ class Player {
                this.y + this.height > other.y;
     }
 
-    // Tighter hitbox for spikes so they feel fair
     checkSpike(spike) {
         const margin = 5;
         return this.x + margin < spike.x + spike.width - margin &&
@@ -203,41 +243,33 @@ class Player {
         const y = Math.round(this.y);
         const fr = this.facingRight;
 
-        // Legs with walk animation
         const walk = Math.abs(this.velX) > 0.5 ? (Math.floor(Date.now() / 100) % 2 === 0 ? 4 : -4) : 0;
         ctx.fillStyle = '#1565C0';
         ctx.fillRect(x + 6, y + 28, 7, 8 + walk);
         ctx.fillRect(x + this.width - 13, y + 28, 7, 8 - walk);
 
-        // Shoes
         ctx.fillStyle = '#333';
         ctx.fillRect(x + 4, y + 34 + walk, 10, 4);
         ctx.fillRect(x + this.width - 14, y + 34 - walk, 10, 4);
 
-        // Body (blue shirt)
         ctx.fillStyle = '#2196F3';
         ctx.fillRect(x + 4, y + 12, this.width - 8, 16);
 
-        // Collar / neck
         ctx.fillStyle = '#FFCCBC';
         ctx.fillRect(x + 10, y + 10, 8, 4);
 
-        // Head
         ctx.fillStyle = '#FFCCBC';
         ctx.fillRect(x + 6, y + 1, this.width - 12, 12);
 
-        // Hair (brown)
         ctx.fillStyle = '#5D4037';
         ctx.fillRect(x + 6, y - 1, this.width - 12, 5);
-        ctx.fillRect(x + 5, y + 1, 3, 4); // sideburn left
-        ctx.fillRect(x + this.width - 8, y + 1, 3, 4); // sideburn right
+        ctx.fillRect(x + 5, y + 1, 3, 4);
+        ctx.fillRect(x + this.width - 8, y + 1, 3, 4);
 
-        // Eyes
         ctx.fillStyle = '#333';
         const eyeX = fr ? x + 16 : x + 8;
         ctx.fillRect(eyeX, y + 4, 2, 3);
 
-        // Smile
         ctx.strokeStyle = '#8B4513';
         ctx.lineWidth = 1.5;
         ctx.beginPath();
@@ -245,7 +277,6 @@ class Player {
         ctx.arc(smileX, y + 8, 3, 0.1, Math.PI - 0.1);
         ctx.stroke();
 
-        // Arms
         ctx.fillStyle = '#2196F3';
         if (fr) {
             ctx.fillRect(x + this.width - 4, y + 14, 5, 7);
@@ -258,6 +289,17 @@ class Player {
         } else {
             ctx.fillRect(x - 1, y + 20, 4, 4);
         }
+
+        // Double-jump sparkle trail
+        if (!this.grounded && this.jumpsLeft === 0) {
+            ctx.save();
+            ctx.globalAlpha = 0.4;
+            ctx.fillStyle = '#80D8FF';
+            ctx.beginPath();
+            ctx.arc(x + this.width / 2, y + this.height + 4, 8, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        }
     }
 
     reset(x, y) {
@@ -266,6 +308,7 @@ class Player {
         this.velX = 0;
         this.velY = 0;
         this.grounded = false;
+        this.jumpsLeft = 2;
     }
 }
 
@@ -274,14 +317,127 @@ class Platform {
     constructor(x, y, width, height) {
         this.x = x; this.y = y; this.width = width; this.height = height;
     }
+    grassColor() {
+        if (currentLevel === 4) return '#C8830A';
+        if (currentLevel === 5) return '#2E7D32';
+        return COLORS.grass;
+    }
+    dirtColor() {
+        if (currentLevel === 4) return '#A0522D';
+        if (currentLevel === 5) return '#1B5E20';
+        return COLORS.dirt;
+    }
     draw(ctx) {
-        ctx.fillStyle = COLORS.grass;
+        ctx.fillStyle = this.grassColor();
         ctx.fillRect(this.x, this.y, this.width, 8);
-        ctx.fillStyle = COLORS.dirt;
+        ctx.fillStyle = this.dirtColor();
         ctx.fillRect(this.x, this.y + 8, this.width, this.height - 8);
         ctx.strokeStyle = '#3E2723';
         ctx.lineWidth = 2;
         ctx.strokeRect(this.x, this.y, this.width, this.height);
+    }
+}
+
+// --- Moving Platform ---
+class MovingPlatform extends Platform {
+    constructor(x, y, width, height, minX, maxX, speed) {
+        super(x, y, width, height);
+        this.minX = minX;
+        this.maxX = maxX;
+        this.velX = speed || 1.5;
+        this.prevX = x;
+    }
+    update() {
+        this.prevX = this.x;
+        this.x += this.velX;
+        if (this.x <= this.minX || this.x + this.width >= this.maxX) {
+            this.velX *= -1;
+        }
+    }
+    draw(ctx) {
+        // Brighter top stripe to distinguish from static
+        ctx.fillStyle = currentLevel === 5 ? '#43A047' : (currentLevel === 4 ? '#FFB74D' : '#81C784');
+        ctx.fillRect(this.x, this.y, this.width, 8);
+        ctx.fillStyle = currentLevel === 4 ? '#8D6E63' : '#6D4C41';
+        ctx.fillRect(this.x, this.y + 8, this.width, this.height - 8);
+        ctx.strokeStyle = '#3E2723';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(this.x, this.y, this.width, this.height);
+        // Arrow indicators
+        ctx.save();
+        ctx.fillStyle = 'rgba(255,255,255,0.75)';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('◀ ▶', this.x + this.width / 2, this.y + 4);
+        ctx.restore();
+    }
+}
+
+// --- Enemy ---
+class Enemy {
+    constructor(x, y, minX, maxX, speed) {
+        this.x = x;
+        this.y = y;
+        this.width = 30;
+        this.height = 26;
+        this.velX = speed || 1.2;
+        this.minX = minX;
+        this.maxX = maxX;
+        this.dead = false;
+        this.deathTimer = 0;
+        this.walkTimer = 0;
+        this.walkFrame = 0;
+    }
+    squish() {
+        this.dead = true;
+        this.deathTimer = 0;
+    }
+    update() {
+        if (this.dead) { this.deathTimer++; return; }
+        this.x += this.velX;
+        if (this.x <= this.minX || this.x + this.width >= this.maxX) this.velX *= -1;
+        this.walkTimer++;
+        if (this.walkTimer % 10 === 0) this.walkFrame = 1 - this.walkFrame;
+    }
+    draw(ctx) {
+        if (this.dead) {
+            if (this.deathTimer < 45) {
+                ctx.fillStyle = '#388E3C';
+                ctx.fillRect(this.x, this.y + this.height - 7, this.width, 7);
+                ctx.fillStyle = '#1B5E20';
+                ctx.fillRect(this.x + 4, this.y + this.height - 7, 8, 4);
+                ctx.fillRect(this.x + this.width - 12, this.y + this.height - 7, 8, 4);
+            }
+            return;
+        }
+        const x = this.x, y = this.y;
+        // Body dome
+        ctx.fillStyle = '#388E3C';
+        ctx.beginPath();
+        ctx.arc(x + 15, y + 14, 13, Math.PI, 0);
+        ctx.fill();
+        ctx.fillRect(x + 2, y + 12, 26, 14);
+
+        // Feet
+        const fo = this.walkFrame === 0 ? 2 : -2;
+        ctx.fillStyle = '#1B5E20';
+        ctx.fillRect(x + 3,  y + this.height - 7 + fo, 9, 7);
+        ctx.fillRect(x + 18, y + this.height - 7 - fo, 9, 7);
+
+        // Eyes (angry white + dark pupils)
+        ctx.fillStyle = 'white';
+        ctx.fillRect(x + 5, y + 6, 8, 8);
+        ctx.fillRect(x + 17, y + 6, 8, 8);
+        ctx.fillStyle = '#0D47A1';
+        ctx.fillRect(x + 7, y + 9, 4, 4);
+        ctx.fillRect(x + 19, y + 9, 4, 4);
+        // Angry brows
+        ctx.fillStyle = '#1B5E20';
+        ctx.save();
+        ctx.translate(x + 9, y + 6);  ctx.rotate(0.4);  ctx.fillRect(-5, -2, 9, 3); ctx.restore();
+        ctx.save();
+        ctx.translate(x + 21, y + 6); ctx.rotate(-0.4); ctx.fillRect(-4, -2, 9, 3); ctx.restore();
     }
 }
 
@@ -328,7 +484,6 @@ class Spike {
             ctx.closePath();
             ctx.fill();
         }
-        // Metallic sheen
         ctx.fillStyle = 'rgba(255,255,255,0.3)';
         for (let i = 0; i < 3; i++) {
             ctx.beginPath();
@@ -350,35 +505,26 @@ class Castle {
     }
     update() { this.flagWave += 0.05; }
     draw(ctx) {
-        // Castle base
         ctx.fillStyle = COLORS.castle;
         ctx.fillRect(this.x, this.y + 20, this.width, this.height - 20);
-        // Towers
         ctx.fillRect(this.x - 10, this.y + 10, 20, this.height - 10);
         ctx.fillRect(this.x + this.width - 10, this.y + 10, 20, this.height - 10);
-        // Battlements
         ctx.fillStyle = '#7B1FA2';
-        for (let i = 0; i < 4; i++) {
-            ctx.fillRect(this.x + 5 + i * 18, this.y + 17, 10, 8);
-        }
+        for (let i = 0; i < 4; i++) ctx.fillRect(this.x + 5 + i * 18, this.y + 17, 10, 8);
         ctx.fillRect(this.x - 12, this.y + 7, 8, 8);
         ctx.fillRect(this.x + 4, this.y + 7, 8, 8);
         ctx.fillRect(this.x + this.width - 12, this.y + 7, 8, 8);
         ctx.fillRect(this.x + this.width + 4, this.y + 7, 8, 8);
-        // Windows
         ctx.fillStyle = '#FFE082';
         ctx.fillRect(this.x + 20, this.y + 30, 10, 12);
         ctx.fillRect(this.x + this.width - 30, this.y + 30, 10, 12);
-        // Door
         ctx.fillStyle = '#3E2723';
         ctx.beginPath();
         ctx.arc(this.x + this.width / 2, this.y + this.height - 5, 10, Math.PI, 0);
         ctx.fill();
         ctx.fillRect(this.x + this.width / 2 - 10, this.y + this.height - 5, 20, 8);
-        // Flag pole
         ctx.fillStyle = '#9E9E9E';
         ctx.fillRect(this.x + this.width / 2, this.y - 32, 3, 32);
-        // Waving flag
         ctx.fillStyle = COLORS.flag;
         ctx.beginPath();
         ctx.moveTo(this.x + this.width / 2 + 3, this.y - 30);
@@ -407,7 +553,10 @@ function createLevel(level) {
             new Platform(950, 200, 80, 20),
             new Platform(1150, 140, 50, 20),
             new Platform(1230, 110, 60, 20),
-            new Platform(1330, 80, 100, 20), // wider final platform, closer to castle
+            new Platform(1330, 80, 100, 20),
+        ];
+        const movingPlatforms = [
+            new MovingPlatform(600, 310, 80, 20, 580, 720, 1.2),
         ];
         const coins = [
             new Coin(150, 360), new Coin(250, 360), new Coin(495, 340),
@@ -418,8 +567,12 @@ function createLevel(level) {
             new Spike(520, 360), new Spike(544, 360), new Spike(568, 360),
             new Spike(1100, 320), new Spike(1124, 320),
         ];
+        const enemies = [
+            new Enemy(160, 364, 0, 390),
+            new Enemy(760, 340, 700, 940),
+        ];
         const castle = new Castle(1450, 260);
-        return { platforms, coins, spikes, castle };
+        return { platforms, movingPlatforms, coins, spikes, enemies, castle };
     }
 
     if (level === 3) {
@@ -439,7 +592,11 @@ function createLevel(level) {
             new Platform(950, 260, 50, 20),
             new Platform(1080, 220, 50, 20),
             new Platform(1200, 180, 80, 20),
-            new Platform(1310, 150, 80, 20), // closer to castle
+            new Platform(1310, 150, 80, 20),
+        ];
+        const movingPlatforms = [
+            new MovingPlatform(380, 340, 80, 20, 300, 490, 1.5),
+            new MovingPlatform(830, 260, 60, 20, 810, 900, 1.8),
         ];
         const coins = [
             new Coin(100, 360), new Coin(400, 360), new Coin(700, 360),
@@ -450,24 +607,115 @@ function createLevel(level) {
         const spikes = [
             new Spike(720, 380), new Spike(744, 380), new Spike(950, 360),
         ];
+        const enemies = [
+            new Enemy(100, 364, 0, 190),
+            new Enemy(640, 384, 600, 790),
+            new Enemy(960, 260, 900, 1040),
+        ];
         const castle = new Castle(1400, 260);
-        return { platforms, coins, spikes, castle };
+        return { platforms, movingPlatforms, coins, spikes, enemies, castle };
     }
 
-    // Level 1
+    if (level === 4) {
+        // Sunset / desert canyon theme
+        const platforms = [
+            new Platform(0, 400, 300, 50),
+            new Platform(380, 390, 200, 60),
+            new Platform(680, 380, 180, 70),
+            new Platform(960, 370, 200, 80),
+            new Platform(1250, 350, 180, 100),
+            new Platform(200, 310, 80, 20),
+            new Platform(480, 280, 80, 20),
+            new Platform(780, 250, 80, 20),
+            new Platform(1060, 220, 60, 20),
+            new Platform(1320, 180, 60, 20),
+            new Platform(1450, 150, 80, 20),
+            new Platform(1580, 120, 100, 20),
+        ];
+        const movingPlatforms = [
+            new MovingPlatform(320, 330, 80, 20, 300, 470, 2.0),
+            new MovingPlatform(620, 300, 70, 20, 590, 760, 2.0),
+            new MovingPlatform(900, 260, 70, 20, 870, 1040, 1.8),
+            new MovingPlatform(1200, 230, 70, 20, 1170, 1340, 2.2),
+        ];
+        const coins = [
+            new Coin(100, 360), new Coin(420, 350), new Coin(720, 340),
+            new Coin(230, 270), new Coin(510, 240), new Coin(810, 210),
+            new Coin(1090, 180), new Coin(1350, 140), new Coin(1480, 110), new Coin(1610, 80),
+        ];
+        const spikes = [
+            new Spike(610, 360), new Spike(634, 360),
+            new Spike(890, 350), new Spike(914, 350),
+            new Spike(1170, 330), new Spike(1194, 330),
+        ];
+        const enemies = [
+            new Enemy(100, 364, 0, 290, 1.4),
+            new Enemy(430, 374, 380, 570, 1.6),
+            new Enemy(720, 364, 680, 850, 1.8),
+            new Enemy(1000, 354, 960, 1140, 1.5),
+            new Enemy(1290, 334, 1250, 1420, 1.7),
+        ];
+        const castle = new Castle(1680, 240);
+        return { platforms, movingPlatforms, coins, spikes, enemies, castle };
+    }
+
+    if (level === 5) {
+        // Night sky theme — lots of moving platforms, vertical challenge
+        const platforms = [
+            new Platform(0, 400, 250, 50),
+            new Platform(350, 390, 150, 60),
+            new Platform(700, 380, 150, 70),
+            new Platform(1050, 360, 120, 90),
+            new Platform(1400, 340, 150, 110),
+        ];
+        const movingPlatforms = [
+            new MovingPlatform(220, 330, 80, 20, 200, 370, 1.8),
+            new MovingPlatform(440, 290, 70, 20, 350, 600, 2.2),
+            new MovingPlatform(640, 250, 70, 20, 600, 800, 2.0),
+            new MovingPlatform(820, 210, 70, 20, 780, 980, 2.4),
+            new MovingPlatform(1000, 170, 70, 20, 960, 1150, 2.0),
+            new MovingPlatform(1170, 130, 70, 20, 1130, 1330, 2.6),
+            new MovingPlatform(1350, 90,  70, 20, 1310, 1500, 2.4),
+            new MovingPlatform(580, 320, 60, 20, 540, 720, 2.8),
+            new MovingPlatform(900, 280, 60, 20, 860, 1060, 2.6),
+        ];
+        const coins = [
+            new Coin(80, 360), new Coin(390, 350), new Coin(740, 340),
+            new Coin(255, 290), new Coin(470, 250), new Coin(665, 210), new Coin(845, 170),
+            new Coin(1025, 130), new Coin(1195, 90), new Coin(1375, 50),
+        ];
+        const spikes = [
+            new Spike(580, 360), new Spike(604, 360),
+            new Spike(930, 340), new Spike(954, 340),
+        ];
+        const enemies = [
+            new Enemy(80,  364, 0,   240, 1.6),
+            new Enemy(400, 374, 350, 490, 2.0),
+            new Enemy(750, 364, 700, 840, 1.8),
+            new Enemy(1090, 344, 1050, 1170, 2.2),
+            new Enemy(1440, 324, 1400, 1540, 2.5),
+        ];
+        const castle = new Castle(1600, 240);
+        return { platforms, movingPlatforms, coins, spikes, enemies, castle };
+    }
+
+    // Level 1 — original, now with one moving platform intro
     const platforms = [
         new Platform(0, 400, 300, 50),
         new Platform(350, 380, 200, 70),
         new Platform(600, 350, 200, 100),
-        new Platform(850, 320, 200, 130), // extended to reach castle
+        new Platform(850, 320, 200, 130),
         new Platform(200, 300, 100, 20),
         new Platform(450, 280, 100, 20),
         new Platform(650, 220, 80, 20),
         new Platform(300, 180, 60, 20),
         new Platform(500, 140, 60, 20),
-        new Platform(700, 100, 60, 20),  // added bridge to castle
+        new Platform(700, 100, 60, 20),
         new Platform(850, 70, 60, 20),
-        new Platform(980, 50, 100, 20),  // platform right at castle
+        new Platform(980, 50, 100, 20),
+    ];
+    const movingPlatforms = [
+        new MovingPlatform(560, 300, 70, 20, 540, 680, 1.0),
     ];
     const coins = [
         new Coin(150, 360), new Coin(400, 340), new Coin(700, 310),
@@ -478,8 +726,11 @@ function createLevel(level) {
     const spikes = [
         new Spike(520, 360), new Spike(544, 360), new Spike(720, 330),
     ];
+    const enemies = [
+        new Enemy(150, 364, 0, 290),
+    ];
     const castle = new Castle(1050, 260);
-    return { platforms, coins, spikes, castle };
+    return { platforms, movingPlatforms, coins, spikes, enemies, castle };
 }
 
 // --- Game Setup ---
@@ -499,65 +750,93 @@ function initGame(resetCoins) {
 }
 
 // --- Background ---
-// Cloud positions are randomized per level but stable during gameplay
 const cloudData = [
-    { x: 80, y: 70, r: [30, 40, 30] },
+    { x: 80,  y: 70,  r: [30, 40, 30] },
     { x: 420, y: 110, r: [35, 45, 35] },
-    { x: 660, y: 55, r: [25, 35, 25] },
+    { x: 660, y: 55,  r: [25, 35, 25] },
 ];
 let cloudOffset = 0;
+// Stable star field for level 5
+const starField = Array.from({ length: 80 }, () => ({
+    x: Math.random() * CANVAS_WIDTH,
+    y: Math.random() * CANVAS_HEIGHT * 0.7,
+    r: Math.random() * 1.5 + 0.5,
+    twinkle: Math.random() * Math.PI * 2,
+}));
 
 function drawBackground() {
+    const theme = THEMES[currentLevel] || THEMES[1];
     const gradient = ctx.createLinearGradient(0, 0, 0, CANVAS_HEIGHT);
-    gradient.addColorStop(0, COLORS.skyTop);
-    gradient.addColorStop(1, COLORS.skyBottom);
+    gradient.addColorStop(0, theme.skyTop);
+    gradient.addColorStop(1, theme.skyBottom);
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
-    // Slowly drifting clouds (independent of camera)
-    cloudOffset = (cloudOffset + 0.1) % CANVAS_WIDTH;
-    ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    for (const cloud of cloudData) {
-        const bx = ((cloud.x + cloudOffset) % (CANVAS_WIDTH + 200)) - 100;
+    if (currentLevel === 5) {
+        // Twinkling stars
+        for (const s of starField) {
+            s.twinkle += 0.04;
+            ctx.save();
+            ctx.globalAlpha = 0.5 + Math.sin(s.twinkle) * 0.4;
+            ctx.fillStyle = 'white';
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        }
+        // Crescent moon
+        ctx.save();
+        ctx.fillStyle = '#FFFDE7';
         ctx.beginPath();
-        ctx.arc(bx, cloud.y, cloud.r[0], 0, Math.PI * 2);
-        ctx.arc(bx + 40, cloud.y, cloud.r[1], 0, Math.PI * 2);
-        ctx.arc(bx + 80, cloud.y, cloud.r[2], 0, Math.PI * 2);
+        ctx.arc(680, 60, 28, 0, Math.PI * 2);
         ctx.fill();
+        ctx.fillStyle = theme.skyTop;
+        ctx.beginPath();
+        ctx.arc(694, 55, 24, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    } else {
+        // Clouds
+        cloudOffset = (cloudOffset + 0.1) % CANVAS_WIDTH;
+        ctx.fillStyle = currentLevel === 4 ? 'rgba(255,200,120,0.75)' : 'rgba(255,255,255,0.85)';
+        for (const cloud of cloudData) {
+            const bx = ((cloud.x + cloudOffset) % (CANVAS_WIDTH + 200)) - 100;
+            ctx.beginPath();
+            ctx.arc(bx, cloud.y, cloud.r[0], 0, Math.PI * 2);
+            ctx.arc(bx + 40, cloud.y, cloud.r[1], 0, Math.PI * 2);
+            ctx.arc(bx + 80, cloud.y, cloud.r[2], 0, Math.PI * 2);
+            ctx.fill();
+        }
     }
 
     // Background hills
-    ctx.fillStyle = '#A5D6A7';
-    ctx.beginPath();
-    ctx.moveTo(0, CANVAS_HEIGHT);
-    ctx.lineTo(200, 340);
-    ctx.lineTo(400, CANVAS_HEIGHT);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(350, CANVAS_HEIGHT);
-    ctx.lineTo(600, 310);
-    ctx.lineTo(850, CANVAS_HEIGHT);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(700, CANVAS_HEIGHT);
-    ctx.lineTo(900, 360);
-    ctx.lineTo(1100, CANVAS_HEIGHT);
-    ctx.fill();
+    ctx.fillStyle = theme.hillColor;
+    ctx.beginPath(); ctx.moveTo(0, CANVAS_HEIGHT); ctx.lineTo(200, 340); ctx.lineTo(400, CANVAS_HEIGHT); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(350, CANVAS_HEIGHT); ctx.lineTo(600, 310); ctx.lineTo(850, CANVAS_HEIGHT); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(700, CANVAS_HEIGHT); ctx.lineTo(900, 360); ctx.lineTo(1100, CANVAS_HEIGHT); ctx.fill();
 }
 
 // --- Game Loop ---
 function update() {
     if (gameState.current !== 'playing') return;
 
-    const status = player.update(levelData.platforms, levelData.coins, levelData.spikes);
+    // Update moving platforms before player
+    if (levelData.movingPlatforms) {
+        for (const mp of levelData.movingPlatforms) mp.update();
+    }
+
+    const status = player.update(
+        levelData.platforms, levelData.coins, levelData.spikes,
+        levelData.enemies, levelData.movingPlatforms
+    );
     if (status === 'dead') { handleDeath(); return; }
 
-    // Smooth camera: keep player at 1/3 screen width
+    // Smooth camera
     const targetX = player.x - CANVAS_WIDTH / 3;
     cameraX += (targetX - cameraX) * 0.1;
     if (cameraX < 0) cameraX = 0;
 
-    // Win: player reaches castle (relative y check so it works for all levels)
+    // Win: reach castle
     if (player.x + player.width > levelData.castle.x &&
         player.x < levelData.castle.x + levelData.castle.width &&
         player.y + player.height > levelData.castle.y + 20) {
@@ -567,6 +846,15 @@ function update() {
 
     levelData.coins.forEach(c => c.update());
     levelData.castle.update();
+    if (levelData.enemies) {
+        for (const e of levelData.enemies) e.update();
+        // Clean up long-dead enemies
+        for (let i = levelData.enemies.length - 1; i >= 0; i--) {
+            if (levelData.enemies[i].dead && levelData.enemies[i].deathTimer > 50) {
+                levelData.enemies.splice(i, 1);
+            }
+        }
+    }
 
     for (let i = particles.length - 1; i >= 0; i--) {
         particles[i].update();
@@ -582,9 +870,11 @@ function draw() {
     ctx.translate(-cameraX, 0);
 
     levelData.platforms.forEach(p => p.draw(ctx));
+    if (levelData.movingPlatforms) levelData.movingPlatforms.forEach(p => p.draw(ctx));
     levelData.spikes.forEach(s => s.draw(ctx));
     levelData.castle.draw(ctx);
     levelData.coins.forEach(c => c.draw(ctx));
+    if (levelData.enemies) levelData.enemies.forEach(e => e.draw(ctx));
     particles.forEach(p => p.draw(ctx));
     player.draw(ctx);
 
@@ -610,7 +900,6 @@ function handleDeath() {
     } else {
         cameraX = 0;
         player.reset(50, 320);
-        // Flash the lives display red briefly
         const livesEl = document.getElementById('livesDisplay');
         livesEl.style.background = 'rgba(255,80,80,0.9)';
         setTimeout(() => { livesEl.style.background = ''; }, 600);
@@ -618,14 +907,16 @@ function handleDeath() {
 }
 
 function handleWin() {
-    if (currentLevel < 3) {
+    if (currentLevel < MAX_LEVEL) {
         currentLevel++;
-        gameState.current = 'levelcomplete'; // stops the game loop
+        gameState.current = 'levelcomplete';
         playSound('levelcomplete');
+        const themes = ['', '', '', '', '🌅 Sunset Canyon', '🌙 Night Sky'];
+        const subtitle = currentLevel >= 4 ? `<br><span style="font-size:14px;opacity:0.8">${themes[currentLevel]} awaits!</span>` : '';
         showOverlay(
             `Level ${currentLevel - 1} Complete! 🎉`,
-            `Amazing work, Rhys! Get ready for Level ${currentLevel}!<br><br>` +
-            `<span style="font-size:16px;opacity:0.8">Coins collected so far: ${gameState.coins} ⭐</span>`,
+            `Amazing work, Rhys! Get ready for Level ${currentLevel}!${subtitle}<br><br>` +
+            `<span style="font-size:16px;opacity:0.8">Coins so far: ${gameState.coins} ⭐</span>`,
             'Next Level'
         );
     } else {
@@ -634,10 +925,11 @@ function handleWin() {
         const best = saveHighScore(gameState.coins);
         showOverlay(
             'YOU WIN! 🏆',
-            `Rhys saved the day and completed all 3 levels!<br><br>` +
+            `Rhys conquered all ${MAX_LEVEL} levels and saved the day!<br><br>` +
             `<span style="font-size:18px">⭐ Total coins: ${gameState.coins} ⭐</span><br>` +
-            (gameState.coins >= best ? `<span style="font-size:14px;color:#FFD700">New high score!</span>` :
-             `<span style="font-size:14px;opacity:0.8">Best ever: ${best} coins</span>`),
+            (gameState.coins >= best ?
+                `<span style="font-size:14px;color:#FFD700">New high score!</span>` :
+                `<span style="font-size:14px;opacity:0.8">Best ever: ${best} coins</span>`),
             'Play Again'
         );
     }
@@ -709,7 +1001,7 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'ArrowRight' || e.code === 'KeyD')  keys.right = true;
     if (e.code === 'ArrowUp'    || e.code === 'Space' || e.code === 'KeyW') {
         keys.up = true;
-        e.preventDefault(); // prevent page scroll
+        e.preventDefault();
     }
     if (e.code === 'ArrowDown') e.preventDefault();
     if (e.code === 'KeyR' && gameState.current !== 'start') startGame();
