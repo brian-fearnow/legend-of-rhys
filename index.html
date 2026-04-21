@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>The Legend of Rhys</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: linear-gradient(to bottom, #87CEEB 0%, #E0F6FF 100%);
+            font-family: 'Comic Sans MS', 'Chalkboard SE', sans-serif;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        #game-container {
+            position: relative;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        canvas { display: block; background: transparent; }
+
+        #ui-layer {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .hud {
+            padding: 12px 15px;
+            display: flex;
+            justify-content: space-between;
+            font-size: 18px;
+            color: #333;
+            text-shadow: 1px 1px 0 #fff;
+        }
+
+        .hud span {
+            background: rgba(255,255,255,0.85);
+            padding: 5px 14px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 16px;
+            transition: background 0.3s;
+        }
+
+        #overlay {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(0,0,0,0.72);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            text-align: center;
+            pointer-events: auto;
+            padding: 20px;
+        }
+
+        h1 {
+            font-size: 44px;
+            margin-bottom: 16px;
+            color: #FFD700;
+            text-shadow: 3px 3px 0 #8B4513;
+        }
+
+        p {
+            font-size: 18px;
+            margin-bottom: 24px;
+            max-width: 580px;
+            line-height: 1.6;
+        }
+
+        button {
+            padding: 14px 40px;
+            font-size: 22px;
+            font-family: inherit;
+            background: linear-gradient(to bottom, #4CAF50, #2E7D32);
+            color: white;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+            transition: transform 0.1s, box-shadow 0.1s;
+            touch-action: manipulation;
+        }
+
+        button:hover  { transform: scale(1.05); box-shadow: 0 7px 20px rgba(0,0,0,0.4); }
+        button:active { transform: scale(0.95); }
+
+        .controls-hint {
+            margin-top: 22px;
+            display: grid;
+            grid-template-columns: auto auto;
+            gap: 8px 20px;
+            text-align: left;
+            font-size: 13px;
+        }
+
+        .key {
+            background: #fff;
+            color: #333;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+
+        /* Touch controls — shown only on touch devices */
+        #touch-controls {
+            position: absolute;
+            bottom: 14px;
+            left: 0; right: 0;
+            display: none;
+            justify-content: center;
+            gap: 14px;
+            pointer-events: auto;
+        }
+
+        @media (hover: none) and (pointer: coarse) {
+            #touch-controls { display: flex; }
+            .controls-hint { display: none; }
+        }
+
+        .touch-btn {
+            width: 68px;
+            height: 68px;
+            font-size: 26px;
+            font-family: inherit;
+            background: rgba(255,255,255,0.25);
+            border: 2px solid rgba(255,255,255,0.55);
+            border-radius: 50%;
+            color: white;
+            cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            touch-action: manipulation;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .touch-btn:active { background: rgba(255,255,255,0.45); }
+
+        #touch-jump {
+            width: 80px;
+            height: 80px;
+            font-size: 22px;
+            background: rgba(76,175,80,0.4);
+            border-color: rgba(76,175,80,0.7);
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="gameCanvas" width="800" height="450"></canvas>
+
+        <div id="ui-layer">
+            <div class="hud">
+                <span id="levelDisplay">Level 1</span>
+                <span id="coinsDisplay">⭐ 0</span>
+                <span id="livesDisplay">❤️❤️❤️</span>
+            </div>
+        </div>
+
+        <div id="touch-controls">
+            <button class="touch-btn" id="touch-left">◀</button>
+            <button class="touch-btn" id="touch-jump">JUMP</button>
+            <button class="touch-btn" id="touch-right">▶</button>
+        </div>
+
+        <div id="overlay">
+            <h1>The Legend of Rhys</h1>
+            <p>Help Rhys the hero collect all the golden stars and reach the castle at the end of each level!</p>
+            <button id="startBtn">Start Adventure ⚔️</button>
+            <div class="controls-hint">
+                <div><span class="key">←</span> <span class="key">→</span> or <span class="key">A</span> <span class="key">D</span></div>
+                <div>Move Left / Right</div>
+                <div><span class="key">↑</span> or <span class="key">Space</span> or <span class="key">W</span></div>
+                <div>Jump</div>
+                <div><span class="key">R</span></div>
+                <div>Restart Level</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="game.js"></script>
+</body>
+</html>
